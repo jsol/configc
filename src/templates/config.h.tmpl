@@ -1,0 +1,48 @@
+
+#ifndef _CONFIG_H_
+#define _CONFIG_H_
+
+#include <glib.h>
+
+#define CONFIG_ERROR config_error_quark()
+#define ERROR_CONFIG_NOT_SET 1
+#define ERROR_CONFIG_TOO_BIG 2
+#define ERROR_CONFIG_TOO_SMALL 3
+#define ERROR_CONFIG_INVALID 4
+#define ERROR_CONFIG_NO_FILE 5
+
+{{range .Enums}}
+enum {{.EnumName}} {
+  {{- range .Options}}
+    {{.EnumName}},
+  {{- end}}
+};
+{{end}}
+
+{{range .Definitions}}
+struct {{.Name}} {
+  {{- range .Variables}}
+    {{.Type}}{{.Name}}; /** {{.Description}} */
+  {{- end}}
+};
+{{end}}
+
+gboolean
+config_parse(struct config *cfg, gint argc, gchar *argv[], gboolean die_on_json_error, GError **err);
+
+void
+config_clear(struct config *cfg);
+
+gchar *
+config_to_string(struct config *cfg);
+
+{{range .Enums}}
+const gchar *
+config_name_enum_{{.FlatRef}}(enum {{.EnumName}} val);
+{{end}}
+
+GQuark
+config_error_quark(void);
+#endif /* _CONFIG_H_ */
+
+

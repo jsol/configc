@@ -1,0 +1,841 @@
+#include <glib.h>
+#include <errno.h>
+#include <jansson.h>
+#include <math.h>
+
+#include "config.h"
+
+static void
+set_candidate(GHashTable *candidates, gchar *name, gchar *value)
+{
+  g_assert(candidates);
+  g_assert(name);
+
+  if (value == NULL) {
+    return;
+  }
+
+  (void) g_hash_table_replace(candidates, (gpointer)name, (gpointer)value);
+}
+
+{{if .SetEnv}}
+static void
+set_env_var(GHashTable *candidates, const gchar *name, const gchar *env)
+{
+  const gchar *tmp;
+
+  g_assert(candidates);
+  g_assert(name);
+  g_assert(env);
+
+  tmp = g_getenv(env);
+  set_candidate(candidates, (gchar *)name, g_strdup(tmp));
+}
+
+static gboolean
+set_env(GHashTable *candidates)
+{
+  g_assert(candidates);
+{{ range .SetEnv }}
+  set_env_var(candidates, "{{ .Name }}", "{{ .Env }}");
+{{end}}
+  return TRUE;
+}
+{{end}}
+
+{{if .SetDefault}}
+static gboolean
+set_defaults(GHashTable *candidates)
+{
+  g_assert(candidates);
+
+{{- range .SetDefault }}
+  set_candidate(candidates, "{{ .Name }}", g_strdup("{{ .Value }}"));
+{{- end}}
+
+  return TRUE;
+}
+{{end}}
+
+{{- if .SetOpt}}
+static gboolean
+parse_opts(GHashTable *candidates, gint *argc, gchar **argv[], GError **err)
+{
+  GOptionContext *context;
+  {{- range .SetOpt }}
+  {{.Type}}{{.Param}} = {{.Default}};
+  {{- end}}
+  GOptionEntry entries[] =
+  {
+  {{- range .SetOpt }}
+    { "{{.Long}}", '{{.Short}}', 0 , {{.EntryType}}, &{{.Param}}, "{{.Desc}}", NULL },
+  {{- end}}
+    { NULL }
+  };
+
+  g_assert(candidates);
+  g_assert(err != NULL && *err == NULL);
+
+  context = g_option_context_new ("");
+  g_option_context_add_main_entries (context, entries, NULL);
+  if (!g_option_context_parse (context, argc, argv, err)) {
+    return FALSE;
+  }
+
+  {{- range .SetOpt }}
+  {{- if eq .EntryType "G_OPTION_ARG_STRING"}}
+  set_candidate(candidates, "{{.Name}}", {{.Param}});
+  {{- end}}
+    {{- if eq .EntryType "G_OPTION_ARG_NONE"}}
+  if ({{.Param}}) {
+    set_candidate(candidates, "{{.Name}}", g_strdup("TRUE"));
+  }
+  {{- end}}
+  {{- end}}
+
+  return TRUE;
+}
+{{- end}}
+
+{{- if .JsonObjects}}
+static gchar *
+get_json_config_file()
+{
+  return g_strdup("./config.json");
+}
+
+static void
+add_json_string_to_candidates(GHashTable *candidates, gchar *name, json_t *parent, gchar *json_name)
+{
+  json_t *val = NULL;
+
+  val = json_object_get(parent, json_name);
+  if (val && json_is_string(val)) {
+    set_candidate(candidates, name, g_strdup(json_string_value(val)));
+  }
+}
+
+static void
+add_json_size_to_candidates(GHashTable *candidates, gchar *name, json_t *parent, gchar *json_name)
+{
+  json_t *val = NULL;
+
+  val = json_object_get(parent, json_name);
+  if (val && json_is_string(val)) {
+    set_candidate(candidates, name, g_strdup(json_string_value(val)));
+  }
+}
+
+static void
+add_json_int_to_candidates(GHashTable *candidates, gchar *name, json_t *parent, gchar *json_name)
+{
+  json_t *val = NULL;
+
+  val = json_object_get(parent, json_name);
+  if (val && json_is_string(val)) {
+    set_candidate(candidates, name, g_strdup(json_string_value(val)));
+  }
+  if (val && json_is_integer(val)) {
+    set_candidate(candidates, name, g_strdup_printf("%lld", json_integer_value(val)));
+  }
+}
+
+static void
+add_json_double_to_candidates(GHashTable *candidates, gchar *name, json_t *parent, gchar *json_name)
+{
+  json_t *val = NULL;
+
+  val = json_object_get(parent, json_name);
+  if (val && json_is_string(val)) {
+    set_candidate(candidates, name, g_strdup(json_string_value(val)));
+  }
+  if (val && json_is_number(val)) {
+    set_candidate(candidates, name, g_strdup_printf("%lf", json_number_value(val)));
+  }
+}
+
+static void
+add_json_enum_to_candidates(GHashTable *candidates, gchar *name, json_t *parent, gchar *json_name)
+{
+  json_t *val = NULL;
+
+  val = json_object_get(parent, json_name);
+  if (val && json_is_string(val)) {
+    set_candidate(candidates, name, g_strdup(json_string_value(val)));
+  }
+}
+
+static void
+add_json_boolean_to_candidates(GHashTable *candidates, gchar *name, json_t *parent, gchar *json_name)
+{
+  json_t *val = NULL;
+  gchar *str = NULL;
+
+  val = json_object_get(parent, json_name);
+  if (val && json_is_boolean(val)) {
+    if (json_is_true(val)) {
+      str = g_strdup("TRUE");
+    } else {
+      str = g_strdup("FALSE");
+    }
+    set_candidate(candidates, name, str);
+  }
+}
+
+static gboolean
+parse_json(GHashTable *candidates, GError **err)
+{
+  gchar *file = NULL;
+  json_error_t j_error;
+  json_set_alloc_funcs(g_malloc, g_free);
+  json_t *root = NULL;
+  {{- range .JsonObjects }}
+  json_t *{{ .Param }} = NULL;
+  {{- end}}
+
+  file = get_json_config_file();
+  root = json_load_file(file, 0, &j_error);
+  g_free(file);
+
+  if (root == NULL) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_NO_FILE,
+                "Could not parse config file %s, error: %s",
+                file,
+                g_strdup(j_error.text));
+    return FALSE;
+  }
+
+  {{- range .JsonObjects }}
+  if ({{ .Parent }} != NULL) {
+    {{ .Param }} = json_object_get({{ .Parent }}, "{{ .Name }}");
+  }
+  {{- end}}
+
+  {{- range .JsonObjects }}
+  if ({{ .Param }} != NULL) {
+    {{$parent := .Param}}
+    {{- range .JsonParameters }}
+        add_json_{{.Type}}_to_candidates(candidates, "{{.FullName}}", {{ $parent }}, "{{.Name}}");
+    {{- end}}
+  }
+  {{- end}}
+
+  json_decref(root);
+  return TRUE;
+}
+{{- end}}
+
+static gboolean
+set_string(const gchar *name, const gchar *str, gchar **dst, gint64 min, gint64 max, gint options, const gchar* opts[], GError **err)
+{
+  g_assert(name);
+  g_assert(str);
+  g_assert(dst);
+  g_assert(err != NULL && *err == NULL);
+
+  if (str == NULL) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_NOT_SET,
+                  "Parameter %s not set",
+                  name);
+    return FALSE;
+  }
+
+  if (strlen(str) < min) {
+    g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_TOO_SMALL,
+                  "Parameter %s too short (min %ld chars)",
+                  name, min);
+    return FALSE;
+  }
+
+  if (strlen(str) > max) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_TOO_BIG,
+                  "Parameter %s too long (max %ld chars)",
+                  name, max);
+    return FALSE;
+  }
+
+  if (options > 0) {
+    gboolean ok = FALSE;
+    for (gint i = 0; i < options; i++) {
+        if (g_strcmp0(opts[i], str) == 0) {
+            ok = TRUE;
+            break;
+        }
+    }
+    if (!ok) {
+      g_set_error(err,
+              CONFIG_ERROR,
+              ERROR_CONFIG_INVALID,
+              "Parameter %s has an invalid value",
+              name);
+      return FALSE;
+    }
+  }
+
+  *dst = g_strdup(str);
+
+  return TRUE;
+}
+
+static gboolean
+set_int(const gchar *name, const gchar *str, gint64 *dst, gint64 min, gint64 max, gint options, const gint64 *opts, GError **err)
+{
+  gint64 tmp;
+  gchar *endp;
+
+  g_assert(name);
+  g_assert(str);
+  g_assert(dst);
+  g_assert(err != NULL && *err == NULL);
+
+  if (str == NULL) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_NOT_SET,
+                  "Parameter %s not set",
+                  name);
+    return FALSE;
+  }
+
+  tmp = g_ascii_strtoll(str, &endp, 10);
+
+  if (tmp == 0 && endp == str) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_INVALID,
+                "Parameter %s has an invalid value",
+                name);
+    return FALSE;
+  }
+
+  if (tmp == G_MAXINT64 && errno == ERANGE) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_BIG,
+                "Parameter %s too big (max %ld)",
+                name, max);
+    return FALSE;
+  }
+
+  if (tmp == G_MININT64 && errno == ERANGE) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_SMALL,
+                "Parameter %s too small (min %ld)",
+                name, min);
+    return FALSE;
+  }
+
+  if (tmp < min) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_SMALL,
+                "Parameter %s too small (min %ld)",
+                 name, min);
+    return FALSE;
+  }
+
+  if (tmp > max) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_TOO_BIG,
+                  "Parameter %s too big (max %ld)",
+                  name, max);
+    return FALSE;
+  }
+
+  if (options > 0) {
+    gboolean ok = FALSE;
+    for (gint i = 0; i < options; i++) {
+        if (opts[i] == tmp) {
+            ok = TRUE;
+            break;
+        }
+    }
+    if (!ok) {
+      g_set_error(err,
+              CONFIG_ERROR,
+              ERROR_CONFIG_INVALID,
+              "Parameter %s has an invalid value",
+              name);
+      return FALSE;
+    }
+  }
+
+  *dst = tmp;
+
+  return TRUE;
+}
+
+static gboolean
+set_size(const gchar *name, const gchar *str, gint64 *dst, gint64 min, gint64 max, gint options, const gint64 *opts, GError **err)
+{
+  gint64 tmp;
+  gchar *endp;
+
+  g_assert(name);
+  g_assert(str);
+  g_assert(dst);
+  g_assert(err != NULL && *err == NULL);
+
+  if (str == NULL) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_NOT_SET,
+                  "Parameter %s not set",
+                  name);
+    return FALSE;
+  }
+
+  tmp = g_ascii_strtoll(str, &endp, 10);
+
+  if (tmp == 0 && endp == str) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_INVALID,
+                "Parameter %s has an invalid value",
+                name);
+    return FALSE;
+  }
+
+  if (tmp == G_MAXINT64 && errno == ERANGE) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_BIG,
+                "Parameter %s too big (max %ld)",
+                name, max);
+    return FALSE;
+  }
+
+  if (tmp == G_MININT64 && errno == ERANGE) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_SMALL,
+                "Parameter %s too small (min %ld)",
+                name, min);
+    return FALSE;
+  }
+
+  if (g_str_has_suffix(str, "kb") || g_str_has_suffix(str, "KB") ) {
+    tmp = tmp * 1024;
+  }
+
+  if (g_str_has_suffix(str, "mb") || g_str_has_suffix(str, "MB") ) {
+    tmp = tmp * 1024 * 1024;
+  }
+
+  if (g_str_has_suffix(str, "gb") || g_str_has_suffix(str, "GB") ) {
+    tmp = tmp * 1024 * 1024 * 1024;
+  }
+
+  if (tmp < min) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_SMALL,
+                "Parameter %s too small (min %ld)",
+                 name, min);
+    return FALSE;
+  }
+
+  if (tmp > max) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_TOO_BIG,
+                  "Parameter %s too big (max %ld)",
+                  name, max);
+    return FALSE;
+  }
+
+  if (options > 0) {
+    gboolean ok = FALSE;
+    for (gint i = 0; i < options; i++) {
+        if (opts[i] == tmp) {
+            ok = TRUE;
+            break;
+        }
+    }
+    if (!ok) {
+      g_set_error(err,
+              CONFIG_ERROR,
+              ERROR_CONFIG_INVALID,
+              "Parameter %s has an invalid value",
+              name);
+      return FALSE;
+    }
+  }
+
+  *dst = tmp;
+
+  return TRUE;
+}
+
+static gboolean
+set_duration(const gchar *name, const gchar *str, gint64 *dst, gint64 min, gint64 max, gint options, const gint64 *opts, GError **err)
+{
+  gint64 tmp;
+  gchar *endp;
+
+  g_assert(name);
+  g_assert(str);
+  g_assert(dst);
+  g_assert(err != NULL && *err == NULL);
+
+  if (str == NULL) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_NOT_SET,
+                  "Parameter %s not set",
+                  name);
+    return FALSE;
+  }
+
+  tmp = g_ascii_strtoll(str, &endp, 10);
+
+  if (tmp == 0 && endp == str) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_INVALID,
+                "Parameter %s has an invalid value",
+                name);
+    return FALSE;
+  }
+
+  if (tmp == G_MAXINT64 && errno == ERANGE) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_BIG,
+                "Parameter %s too big (max %ld)",
+                name, max);
+    return FALSE;
+  }
+
+  if (tmp == G_MININT64 && errno == ERANGE) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_SMALL,
+                "Parameter %s too small (min %ld)",
+                name, min);
+    return FALSE;
+  }
+
+  if (g_str_has_suffix(str, " ms") || g_str_has_suffix(str, " miliseconds") ) {
+    tmp = tmp * 1000;
+  }
+
+  if (g_str_has_suffix(str, " s") || g_str_has_suffix(str, " seconds") ) {
+    tmp = tmp * 1000 * 1000;
+  }
+
+  if (g_str_has_suffix(str, "m") || g_str_has_suffix(str, "GB") ) {
+    tmp = tmp * 1024 * 1024 * 1024;
+  }
+
+  if (tmp < min) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_SMALL,
+                "Parameter %s too small (min %ld)",
+                 name, min);
+    return FALSE;
+  }
+
+  if (tmp > max) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_TOO_BIG,
+                  "Parameter %s too big (max %ld)",
+                  name, max);
+    return FALSE;
+  }
+
+  if (options > 0) {
+    gboolean ok = FALSE;
+    for (gint i = 0; i < options; i++) {
+        if (opts[i] == tmp) {
+            ok = TRUE;
+            break;
+        }
+    }
+    if (!ok) {
+      g_set_error(err,
+              CONFIG_ERROR,
+              ERROR_CONFIG_INVALID,
+              "Parameter %s has an invalid value",
+              name);
+      return FALSE;
+    }
+  }
+
+  *dst = tmp;
+
+  return TRUE;
+}
+
+static gboolean
+set_double(const gchar *name, const gchar *str, gdouble *dst, gdouble min, gdouble max, gint options, const gdouble *opts, GError **err)
+{
+  gdouble tmp;
+  gchar *endp;
+
+  g_assert(name);
+  g_assert(str);
+  g_assert(dst);
+  g_assert(err != NULL && *err == NULL);
+
+  if (str == NULL) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_NOT_SET,
+                  "Parameter %s not set",
+                  name);
+    return FALSE;
+  }
+
+  tmp = g_ascii_strtod(str, &endp);
+
+  if (tmp == 0.0 && endp == str) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_INVALID,
+                "Parameter %s has an invalid value",
+                name);
+    return FALSE;
+  }
+
+  if (tmp == HUGE_VAL && errno == ERANGE) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_BIG,
+                "Parameter %s too big (max %lf)",
+                name, max);
+    return FALSE;
+  }
+
+  if (tmp == 0 && errno == ERANGE) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_SMALL,
+                "Parameter %s too small (min %lf)",
+                name, min);
+    return FALSE;
+  }
+
+  if (tmp < min) {
+    g_set_error(err,
+                CONFIG_ERROR,
+                ERROR_CONFIG_TOO_SMALL,
+                "Parameter %s too small (min %lf)",
+                 name, min);
+    return FALSE;
+  }
+
+  if (tmp > max) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_TOO_BIG,
+                  "Parameter %s too big (max %lf)",
+                  name, max);
+    return FALSE;
+  }
+
+  if (options > 0) {
+    gboolean ok = FALSE;
+    for (gint i = 0; i < options; i++) {
+        if (opts[i] == tmp) {
+            ok = TRUE;
+            break;
+        }
+    }
+    if (!ok) {
+      g_set_error(err,
+              CONFIG_ERROR,
+              ERROR_CONFIG_INVALID,
+              "Parameter %s has an invalid value",
+              name);
+      return FALSE;
+    }
+  }
+
+  *dst = tmp;
+
+  return TRUE;
+}
+
+static gboolean
+set_boolean(const gchar *name, const gchar *str, gboolean *dst, GError **err)
+{
+  g_assert(name);
+  g_assert(str);
+  g_assert(dst);
+  g_assert(err != NULL && *err == NULL);
+
+  if (str == NULL) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_NOT_SET,
+                  "Parameter %s not set",
+                  name);
+    return FALSE;
+  }
+
+  if (g_strcmp0(str, "TRUE") == 0) {
+    *dst = TRUE;
+    return TRUE;
+  }
+  if (g_strcmp0(str, "FALSE") == 0) {
+    *dst = FALSE;
+    return TRUE;
+  }
+
+  g_set_error(err,
+              CONFIG_ERROR,
+              ERROR_CONFIG_INVALID,
+              "Parameter %s has an invalid value",
+              name);
+
+  return FALSE;
+}
+
+{{range .Enums}}
+static gboolean
+set_enum_{{.FlatRef}}(const gchar *name, const gchar *str, enum {{.EnumName}} *dst, GError **err)
+{
+  g_assert(name);
+  g_assert(str);
+  g_assert(dst);
+  g_assert(err != NULL && *err == NULL);
+
+  if (str == NULL) {
+      g_set_error(err,
+                  CONFIG_ERROR,
+                  ERROR_CONFIG_NOT_SET,
+                  "Parameter %s not set",
+                  name);
+    return FALSE;
+  }
+
+  {{- range .Options}}
+  if (g_strcmp0(str, "{{.NiceName}}") == 0) {
+    *dst = {{.EnumName}};
+    return TRUE;
+  }
+  {{- end}}
+
+  g_set_error(err,
+              CONFIG_ERROR,
+              ERROR_CONFIG_INVALID,
+              "Parameter %s has an invalid value",
+              name);
+
+  return FALSE;
+}
+{{end}}
+
+static gboolean
+check_and_set(struct config *cfg, GHashTable *candidates, GError **err)
+{
+  {{- range .ValidateOptions }}
+    {{.}}
+  {{- end}}
+
+  g_assert(cfg);
+  g_assert(candidates);
+  g_assert(err != NULL && *err == NULL);
+
+  {{- range .CheckAndSet }}
+    if (!{{.}}) {
+        return FALSE;
+    }
+  {{- end}}
+
+  return TRUE;
+}
+
+gboolean
+config_parse(struct config *cfg, gint argc, gchar *argv[], gboolean die_on_json_error, GError **err) {
+  GHashTable * candidates = NULL;
+
+  candidates = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, g_free);
+{{if .SetDefault}}
+  set_defaults(candidates);
+{{end}}
+
+{{if .JsonObjects}}
+  if (die_on_json_error) {
+    if (!parse_json(candidates, err)) {
+        goto err;
+    }
+  } else {
+    (void)parse_json(candidates, NULL);
+  }
+{{end}}
+{{if .SetEnv}}
+  set_env(candidates);
+{{end}}
+{{if .SetOpt}}
+  if (!parse_opts(candidates, &argc, &argv, err)) {
+    goto err;
+  }
+{{end}}
+
+  if (!check_and_set(cfg, candidates, err)) {
+    goto err;
+  }
+  g_hash_table_remove_all(candidates);
+  g_clear_pointer(&candidates, g_hash_table_unref);
+
+  return TRUE;
+
+err:
+  g_hash_table_remove_all(candidates);
+  g_clear_pointer(&candidates, g_hash_table_unref);
+  config_clear(cfg);
+
+  return FALSE;
+}
+
+{{range .Enums}}
+const gchar *
+config_name_enum_{{.FlatRef}}(enum {{.EnumName}} val)
+{
+    switch (val) {
+  {{- range .Options}}
+    case {{.EnumName}}:
+      return "{{.NiceName}}";
+  {{- end}}
+    default:
+      g_assert_not_reached();
+    }
+
+    return "";
+}
+{{end}}
+
+void
+config_clear(struct config *cfg)
+{
+  {{- range .Clear }}
+  g_free({{.}});
+  {{- end}}
+  memset(cfg, 0, sizeof(*cfg));
+}
+
+gchar *
+config_to_string(struct config *cfg)
+{
+  return g_strdup_printf({{ .OutputFormat }});
+}
+
+GQuark
+config_error_quark(void)
+{
+  return g_quark_from_static_string ("xxconfig-error-quark");
+}

@@ -1,0 +1,81 @@
+parameters:
+  - name: main.first
+    description: This is a variable
+    type: string
+    default: Just a string
+    json: main.first
+    arg-long: first
+    arg-short: f
+    max: 10
+    min: 1
+
+  - name: main.second
+    type: int
+    default: 7
+    json: main.second
+    arg-long: second
+    arg-short: e
+    env: SECOND_VAR
+    max: 10
+    min: 1
+
+  - name: main.third
+    default: FALSE
+    type: boolean
+    json: main.third
+    arg-long: third
+    arg-short: t
+
+  - name: main.double_param
+    default: 13.5
+    type: double
+    json: main.double
+    arg-long: test-double
+    arg-short: d
+    max: 100
+    min: -10
+
+  - name: main.size
+    default: 10 mb
+    type: size
+    json: main.size
+    arg-long: test-size
+    arg-short: s
+    max: 10000000
+    min: 0
+
+  - name: main.deep.param
+    type: string
+    default: hello
+    json: main.deep.param
+    max: 24
+    min: 1
+    options:
+      - hello
+      - goodbye
+
+  - name: main.deep.enumtest
+    type: enum
+    default: hello
+    json: main.deep.param_enum
+    arg-long: enum-test
+    arg-short: g
+    env: enum-test
+    min: 1
+    options:
+      - hello
+      - goodbye
+
+  - name: main.deep.params
+    type: string
+    default: Just a string
+    json: main.deep.params
+    max: 24
+    min: 1
+
+  - name: other
+    type: string
+    default: Just a string
+    json: other
+    max: 24
+    min: 1
